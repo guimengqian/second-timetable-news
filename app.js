@@ -3,14 +3,20 @@
   const $ = s => document.querySelector(s);
   const $$ = s => [...document.querySelectorAll(s)];
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  let castCardFor=null, castPinned=false, castTimer;
   const parallaxWindows = $$('.chapter-cover>.scene-background');
 
   // No CSS URL is assigned before the asset approaches the viewport.
   function loadScene(el){
+    if(el.classList.contains('wash-layer')){loadWash(el);return;}
     if(el.dataset.bg){el.style.backgroundImage=`url("${el.dataset.bg}")`;el.dataset.bgLoaded='true';}
     if(el.dataset.src){el.src=el.dataset.src;el.dataset.bgLoaded='true';}
   }
-  const sceneAssets=$$('[data-bg],[data-src]');
+  // Washes: a faint illustration under long prose and data panels (image → directional shade → text).
+  // The layer is built here so no image URL exists until the band approaches the viewport.
+  $$('[data-wash]').forEach(el=>{el.classList.add('wash','wash-'+el.dataset.wash);const layer=document.createElement('div');layer.className='wash-layer';layer.setAttribute('aria-hidden','true');layer.innerHTML='<i></i>';el.prepend(layer);});
+  function loadWash(layer){const src=`assets/img/scene-${layer.parentElement.dataset.wash}.jpg`;const img=new Image();img.onload=()=>{layer.style.setProperty('--wash-img',`url("${src}")`);layer.classList.add('is-loaded');};img.src=src;}
+  const sceneAssets=$$('[data-bg],[data-src],.wash-layer');
   const sceneObserver='IntersectionObserver' in window?new IntersectionObserver(entries=>entries.forEach(e=>{if(e.isIntersecting){loadScene(e.target);sceneObserver.unobserve(e.target);}}),{rootMargin:'200px 0px',threshold:0}):null;
   sceneAssets.forEach(el=>sceneObserver?sceneObserver.observe(el):loadScene(el));
   function updatePortrait(src){const img=$('#person-portrait');img.dataset.src=src;const r=img.getBoundingClientRect();if(img.dataset.bgLoaded==='true'||r.bottom>-200&&r.top<innerHeight+200)loadScene(img);else sceneObserver?.observe(img);}
@@ -26,6 +32,7 @@
   topButton.addEventListener('click',()=>{window.scrollTo({top:0,behavior:reducedMotion.matches?'instant':'smooth'});$('#top').setAttribute('tabindex','-1');$('#top').focus({preventScroll:true});});
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const safeURL = value => { try { const u = new URL(value); return /^https?:$/.test(u.protocol) ? u.href : '#source-records'; } catch { return '#source-records'; } };
+  const tipSource = (label, link = '') => `<footer class="tooltip-source"><span>${esc(label)}</span>${link}</footer>`;
   const sourceLink = (url, title = '查看原文') => `<a href="${esc(safeURL(url))}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>`;
   const portraitFiles=['shenruoning','yeshuhuan','chensiqi'];
   const pressed = (selector, active, key) => $$(selector).forEach(b => b.setAttribute('aria-pressed', String(b.dataset[key] === String(active))));
@@ -51,6 +58,12 @@
     }
     const current = [...chapters].reverse().find(x => x.getBoundingClientRect().top < innerHeight * .4) || chapters[0];
     $$('#chapter-nav a').forEach(a => {const active = a.hash === '#'+current.id; a.classList.toggle('active',active); if (active) a.setAttribute('aria-current','location'); else a.removeAttribute('aria-current');});
+    const heroBottom=$('.hero').getBoundingClientRect().bottom, endRect=$('.ending').getBoundingClientRect();
+    document.body.classList.toggle('cast-ready',heroBottom<innerHeight*.35);
+    // Fixed UI sits on the light ending surface: switch it to ink so it stays legible.
+    document.body.classList.toggle('nav-on-paper',endRect.top<innerHeight-200&&endRect.bottom>innerHeight-60);
+    document.body.classList.toggle('rail-on-paper',endRect.top<innerHeight*.2&&endRect.bottom>innerHeight*.6);
+    if(castCardFor)positionCastCard();
     framePending=false;
   }
   const requestReading = () => { if (!framePending) {framePending=true;requestAnimationFrame(updateReading);} };
@@ -72,9 +85,78 @@
       {label:'周末至深夜',title:'到经院、统计学院，补课',text:'去经院和统计学院蹭计量经济学，在图书馆刷LeetCode SQL窗口函数与A/B测试归因题。',quote:'高数期中只考了38分，最后挂科重修，那阵子焦虑到枕头上全是头发。'}]}
   ];
   let personIndex=0,phaseIndex=0;
-  function renderPhase(){ const phase=people[personIndex].phases[phaseIndex]; pressed('[data-phase]',phaseIndex,'phase'); $('#schedule-content').innerHTML=`<h4>${esc(phase.title)}</h4><p>${esc(phase.text)}</p><blockquote>“${esc(phase.quote)}”</blockquote>`; enterTransition($('#schedule-content')); }
-  function renderPerson(){ const p=people[personIndex]; pressed('[data-person]',personIndex,'person'); $('#person-name').textContent=p.name; $('#person-role').textContent=p.role; $('#person-hours').textContent=p.hours; updatePortrait(`assets/img/figure-${portraitFiles[personIndex]}.jpg`); $('#person-portrait').alt=p.name+'人物插画（模拟叙事）'; $('#day-tabs').innerHTML=p.phases.map((x,i)=>`<button data-phase="${i}" aria-pressed="${i===phaseIndex}">${esc(x.label)}</button>`).join(''); $$('[data-phase]').forEach(b=>b.addEventListener('click',()=>{phaseIndex=Number(b.dataset.phase);renderPhase();}));renderPhase(); enterTransition($('.person-heading')); enterTransition($('.schedule-total')); }
-  $$('[data-person]').forEach(b=>b.addEventListener('click',()=>{personIndex=Number(b.dataset.person);phaseIndex=0;renderPerson();}));renderPerson();
+  // Each phase is placed on a Monday-00:00 week axis (hours). Anchors follow the journal's own wording
+  // (周一至周四 / 周五傍晚 / 周二 08:00 / 13:30 / 周末); the slider only positions them, it adds no claims.
+  const weekAnchors=[[8,114],[32,37.5],[8,128]], weekRanges=[[6,144],[30,46],[6,168]];
+  const dayNames=['周一','周二','周三','周四','周五','周六','周日'];
+  let weekTime=weekAnchors[0][0], weekFrame=0;
+  const range=$('#day-range');
+  function weekLabel(t){let d=Math.min(6,Math.floor(t/24)),h=Math.floor(t%24);const m=Math.round(t%1*60);if(t>0&&t%24===0){d=t/24-1;h=24;}return `${dayNames[d]} · ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;}
+  function renderWeek(entering=false){
+    const anchors=weekAnchors[personIndex];
+    const reached=anchors.filter(a=>a<=weekTime).length;
+    phaseIndex=Math.max(0,reached-1);
+    pressed('[data-phase]',phaseIndex,'phase');
+    $$('#schedule-content .schedule-entry').forEach((li,i)=>{const past=i<reached;li.classList.toggle('is-past',past&&i!==reached-1);li.classList.toggle('is-now',past&&i===reached-1);li.classList.toggle('is-future',!past);li.setAttribute('aria-hidden',String(!past));});
+    $('#schedule-content .schedule-empty')?.toggleAttribute('hidden',reached>0);
+    const label=weekLabel(weekTime);$('#day-readout').textContent=label;range.setAttribute('aria-valuetext',label);
+    const h=weekTime%12, m=Math.round(weekTime%1*60);
+    $('.scrub-hour').style.transform=`rotate(${h*30+m*.5}deg)`;$('.scrub-minute').style.transform=`rotate(${m*6}deg)`;
+    range.style.setProperty('--progress',((weekTime-range.min)/(range.max-range.min)*100)+'%');
+    if(entering)enterTransition($('#schedule-content'));
+  }
+  function setWeekTime(t,entering){weekTime=Math.min(Number(range.max),Math.max(Number(range.min),t));range.value=String(weekTime);renderWeek(entering);}
+  range.addEventListener('input',()=>{weekTime=Number(range.value);if(!weekFrame)weekFrame=requestAnimationFrame(()=>{weekFrame=0;renderWeek();});});
+  function renderPerson(){
+    const p=people[personIndex], [min,max]=weekRanges[personIndex], anchors=weekAnchors[personIndex];
+    pressed('[data-person]',personIndex,'person'); $('#person-name').textContent=p.name; $('#person-role').textContent=p.role; $('#person-hours').textContent=p.hours;
+    updatePortrait(`assets/img/figure-${portraitFiles[personIndex]}.jpg`); $('#person-portrait').alt=p.name+'人物插画（模拟叙事）';
+    $('#schedule-sheet').dataset.personRef=portraitFiles[personIndex]; paintCast();
+    range.min=String(min);range.max=String(max);
+    $('#day-ticks').innerHTML=anchors.map((a,i)=>{const x=(a-min)/(max-min)*100, t=x<15?8:x>85?92:50;return `<span style="left:${x}%;transform:translateX(-${t}%);--tick:${t}%">${esc(p.phases[i].label)}</span>`;}).join('');
+    $('#day-tabs').innerHTML=p.phases.map((x,i)=>`<button data-phase="${i}" aria-pressed="${i===0}">${esc(x.label)}</button>`).join('');
+    $$('[data-phase]').forEach(b=>b.addEventListener('click',()=>setWeekTime(anchors[Number(b.dataset.phase)],true)));
+    $('#schedule-content').innerHTML=`<p class="schedule-empty" hidden>向右拖动滑杆，这一周从这里开始。</p><ol class="schedule-timeline">${p.phases.map(x=>`<li class="schedule-entry"><p class="entry-when">${esc(x.label)}</p><h4>${esc(x.title)}</h4><p>${esc(x.text)}</p><blockquote>“${esc(x.quote)}”</blockquote></li>`).join('')}</ol>`;
+    setWeekTime(anchors[0],true); enterTransition($('.person-heading')); enterTransition($('.schedule-total'));
+  }
+  $$('[data-person]').forEach(b=>b.addEventListener('click',()=>{personIndex=Number(b.dataset.person);renderPerson();}));
+
+  // Cast rail: avatars light up while the story is narrating that person; hover/tap opens a short bio.
+  const castKeys=portraitFiles, castQuotes=[people[0].phases[0].quote,people[1].phases[1].quote.split('。')[0]+'。',people[2].phases[1].quote];
+  const castLinks=[[['跳到本章 · 看沈若宁的一周',0]],[['跳到本章 · 看叶书桓的一周',1]],[['出场 · 引子','#chen-intro'],['跳到本章 · 看陈思琪的一周',2]]];
+  const castButtons=$$('.cast-avatar'), castCard=$('#cast-card'), litRefs=new Set();
+  function paintCast(){const lit=new Set([...litRefs].map(el=>el.dataset.personRef));castButtons.forEach(b=>{const on=lit.has(b.dataset.cast);b.classList.toggle('is-lit',on);if(on)b.setAttribute('aria-current','true');else b.removeAttribute('aria-current');});$$('.person-name').forEach(n=>n.classList.toggle('is-lit',lit.has(n.dataset.person)));}
+  if('IntersectionObserver' in window){const castObserver=new IntersectionObserver(entries=>{for(const e of entries){if(e.isIntersecting)litRefs.add(e.target);else litRefs.delete(e.target);}paintCast();},{rootMargin:'-28% 0px -28% 0px',threshold:0});$$('[data-person-ref]').forEach(el=>castObserver.observe(el));}
+  function positionCastCard(){
+    if(!castCardFor||castCard.hidden)return;
+    const r=castCardFor.getBoundingClientRect(), w=castCard.offsetWidth, h=castCard.offsetHeight;
+    if(innerWidth>1050){castCard.style.left=Math.min(innerWidth-w-16,r.right+18)+'px';castCard.style.top=Math.max(76,Math.min(innerHeight-h-16,r.top-12))+'px';}
+    else{const rail=$('.cast-rail').getBoundingClientRect();castCard.style.left='';castCard.style.top=Math.max(76,Math.min(innerHeight-h-12,rail.bottom+8))+'px';}
+  }
+  function closeCast(){clearTimeout(castTimer);castCard.hidden=true;castCardFor?.setAttribute('aria-expanded','false');castCardFor=null;castPinned=false;}
+  function openCast(btn,pin){
+    clearTimeout(castTimer);
+    if(castPinned&&!pin&&btn!==castCardFor)return;
+    const i=castKeys.indexOf(btn.dataset.cast), p=people[i], entering=castCard.hidden||castCardFor!==btn;
+    castCardFor?.setAttribute('aria-expanded','false'); castCardFor=btn; castPinned=pin; btn.setAttribute('aria-expanded','true');
+    castCard.innerHTML=`<button type="button" class="cast-card-close" aria-label="关闭人物小传">关闭</button><div class="cast-card-head"><img src="assets/img/avatar-${castKeys[i]}.jpg" alt="" width="64" height="64"><div><strong>${esc(p.name)}</strong><span>${esc(p.role)}</span></div></div><p class="cast-card-hours"><b>${p.hours}</b>小时 / 周 · 主修之外的额外投入</p><blockquote>“${esc(castQuotes[i])}”</blockquote><div class="cast-card-links">${castLinks[i].map(([text,to])=>typeof to==='number'?`<a href="#schedule-title" data-cast-jump="${to}">${esc(text)} →</a>`:`<a href="${to}">${esc(text)} →</a>`).join('')}</div><small>人物为模拟叙事；肖像为插画</small>`;
+    castCard.hidden=false; positionCastCard(); if(entering)enterTransition(castCard,true);
+    castCard.querySelector('.cast-card-close').addEventListener('click',()=>{const origin=castCardFor;closeCast();origin?.focus();});
+    castCard.querySelectorAll('[data-cast-jump]').forEach(a=>a.addEventListener('click',()=>{personIndex=Number(a.dataset.castJump);renderPerson();closeCast();}));
+    castCard.querySelectorAll('a:not([data-cast-jump])').forEach(a=>a.addEventListener('click',closeCast));
+  }
+  const deferCast=()=>{if(!castPinned){clearTimeout(castTimer);castTimer=setTimeout(closeCast,260);}};
+  castButtons.forEach(b=>{
+    b.addEventListener('pointerenter',e=>{if(e.pointerType!=='touch')openCast(b,false);});b.addEventListener('pointerleave',deferCast);
+    b.addEventListener('focus',()=>openCast(b,false));b.addEventListener('blur',e=>{if(!castCard.contains(e.relatedTarget))deferCast();});
+    b.addEventListener('click',()=>{if(castCardFor===b&&castPinned)closeCast();else openCast(b,true);});
+  });
+  castCard.addEventListener('pointerenter',()=>clearTimeout(castTimer));castCard.addEventListener('pointerleave',deferCast);
+  castCard.addEventListener('focusout',e=>{if(!castCard.contains(e.relatedTarget)&&e.relatedTarget!==castCardFor)deferCast();});
+  document.addEventListener('click',e=>{if(castCardFor&&!castCard.contains(e.target)&&!castCardFor.contains(e.target))closeCast();});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!castCard.hidden){const origin=castCardFor;closeCast();origin?.focus();}});
+  addEventListener('resize',positionCastCard);
+  renderPerson();
   let story, jobSkillIndex;
   const tooltip=document.createElement('aside');
   tooltip.id='chart-tooltip'; tooltip.className='chart-tooltip'; tooltip.hidden=true;
@@ -142,11 +224,11 @@
     el.addEventListener('click',()=>{if(tooltipTarget===el&&tooltipPinned)hideTooltip();else open(true);});
     el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click();}});
   }
-  $$('.admission-row').forEach((el,i)=>bindChartHit(el,()=>{const a=story?.admissions[i];if(!a)return '<p>数据正在加载。</p>';const source=story.sources.find(x=>x.id===a.source);return `<h4>${esc(el.querySelector('.admission-label').textContent)}</h4><p>${esc(a.count)}人 / 计划${i===2?'约':''}${esc(a.plan)}人；${i===2?'拟录取':'录取'}公示。</p><p class="tooltip-note">公示人数不等同于报名人数，不能由此推算录取率。</p>${sourceLink(source.url,'查看公示原文')}`;}));
-  $$('.time-row').forEach((el,i)=>bindChartHit(el,()=>{const d=story?.time[i];return d?`<h4>${esc(d.path)}</h4><p>每周平均额外投入 ${d.mean} 小时；本组 ${d.n} 人。</p><p class="tooltip-note">来源：${esc(story.time_provenance)}。模拟编码用于叙事呈现，不作总体推断。</p>`:'<p>数据正在加载。</p>';}));
-  $$('.routes>div').forEach(el=>bindChartHit(el,()=>`<h4>${esc(el.querySelector('h4').textContent)}</h4><p>${esc(el.textContent)}</p><p class="tooltip-note">各入口的学分、凭证与最高学历要求不同，请分别核对项目简章。</p><a href="#source-records">查看高校文件台账</a>`));
+  $$('.admission-row').forEach((el,i)=>bindChartHit(el,()=>{const a=story?.admissions[i];if(!a)return '<p>数据正在加载。</p>';const source=story.sources.find(x=>x.id===a.source);return `<h4>${esc(el.querySelector('.admission-label').textContent)}</h4><p>${esc(a.count)}人 / 计划${i===2?'约':''}${esc(a.plan)}人；${i===2?'拟录取':'录取'}公示。</p><p class="tooltip-note">公示人数不等同于报名人数，不能由此推算录取率。</p>${tipSource('来源：'+source.school+' · '+source.title,sourceLink(source.url,'查看公示原文'))}`;}));
+  $$('.time-row').forEach((el,i)=>bindChartHit(el,()=>{const d=story?.time[i];return d?`<h4>${esc(d.path)}</h4><p>每周平均额外投入 ${d.mean} 小时；本组 ${d.n} 人。</p><p class="tooltip-note">模拟编码用于叙事呈现，不作总体推断。</p>${tipSource('来源：'+story.time_provenance)}`:'<p>数据正在加载。</p>';}));
+  $$('.routes>div').forEach(el=>bindChartHit(el,()=>`<h4>${esc(el.querySelector('h4').textContent)}</h4><p>${esc(el.textContent)}</p><p class="tooltip-note">各入口的学分、凭证与最高学历要求不同，请分别核对项目简章。</p>${tipSource('来源：人大、中传公开文件；北大招生简章','<a href="#source-records">查看高校文件台账</a>')}`));
   $$('.credit-quilt button').forEach(el=>{
-    const content=()=>{const rows=story?.courses.filter(c=>c.program_id==='cuc-news-2025'&&categoryNames[el.dataset.courseCategory].includes(c.name))||[];const source=story?.sources.find(x=>x.id==='cuc-minor25');return `<h4>${esc(el.textContent)}</h4><p>${rows.map(c=>`${esc(c.name)}：${c.credits}学分，${c.hours}学时`).join('<br>')}</p><p class="tooltip-note">按课程名称归类；不推断实际授课技能。</p>${source?sourceLink(source.url,'查看课程原表'):''}`;};
+    const content=()=>{const rows=story?.courses.filter(c=>c.program_id==='cuc-news-2025'&&categoryNames[el.dataset.courseCategory].includes(c.name))||[];const source=story?.sources.find(x=>x.id==='cuc-minor25');return `<h4>${esc(el.textContent)}</h4><p>${rows.map(c=>`${esc(c.name)}：${c.credits}学分，${c.hours}学时`).join('<br>')}</p><p class="tooltip-note">按课程名称归类；不推断实际授课技能。</p>${tipSource('来源：'+(source?source.title:'中传2025年辅修招生简章'),source?sourceLink(source.url,'查看课程原表'):'')}`;};
     el.setAttribute('aria-controls','chart-tooltip');el.setAttribute('aria-expanded','false');
     el.addEventListener('pointerenter',e=>{if(e.pointerType!=='touch')showTooltip(el,content());});el.addEventListener('pointerleave',deferHide);
     el.addEventListener('focus',()=>showTooltip(el,content()));el.addEventListener('blur',deferHide);el.addEventListener('click',()=>showTooltip(el,content(),true));
@@ -169,7 +251,13 @@
   }
 
 
-  const revealTargets=$$('.chapter-cover h2,.chapter-question,.chapter-divider,.prose>p,.prose>.voice,.person-introduction,.figure>figcaption,.figure>.chart-conclusion,.choice,.core-findings,.ending>p,.ending-title');
+  const openingStage=$('.opening-stage');
+  if('IntersectionObserver' in window&&!reducedMotion.matches){
+    openingStage.classList.add('is-armed');
+    const openingObserver=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting)){openingStage.classList.add('is-playing');openingObserver.disconnect();}},{threshold:.35});
+    openingObserver.observe(openingStage);
+  }
+  const revealTargets=$$('.chapter-cover h2,.chapter-cover .chapter-question,.chapter-divider,.prose>p,.prose>.voice,.person-introduction,.figure>figcaption,.figure>.chart-conclusion,.choice,.core-findings,.ending-voice,.ending>p,.ending-title,.credits-inner');
   const mediaTargets=$$('.image-window');
   const counters=$$('.lead-evidence b');
   const counterFrames=new Map();
@@ -197,7 +285,7 @@
   reducedMotion.addEventListener('change',()=>{
     if(reducedMotion.matches){
       revealObserver?.disconnect();mediaObserver?.disconnect();countObserver?.disconnect();
-      revealTargets.forEach(el=>el.classList.add('is-revealed'));
+      revealTargets.forEach(el=>el.classList.add('is-revealed'));openingStage.classList.add('is-playing');
       mediaTargets.forEach(el=>el.classList.add('is-revealed','image-settled'));
       for(const [el,id] of counterFrames){cancelAnimationFrame(id);el.textContent=el.dataset.countFinal;}counterFrames.clear();
       for(const a of runningAnimations.values())a.cancel();runningAnimations.clear();
@@ -232,7 +320,7 @@
       return j.group===group&&(!category||j.job_category===category)&&(jobSkillIndex[j.id]||[]).includes(skill);
     });
     const job=jobs.find(j=>jobExcerpt(j,skill));
-    const html=`<h4>${esc(skill)} · ${esc(c.name)}</h4><p>${esc(detail)}</p>`+(job?`<p class="tooltip-meta">岗位例句｜${esc(job.employer)} · ${esc(job.title)}</p><blockquote>“${esc(jobExcerpt(job,skill))}”</blockquote>${sourceLink(job.url,'打开这条招聘原文')}<p class="tooltip-note">例句摘自该岗位 responsibilities / requirements；按逐条技能编码匹配。提及率不代表录用概率。</p>`:`<p class="tooltip-note">这组样本没有点名该技能的岗位，不提供其他组的例句。</p>`);
+    const html=`<h4>${esc(skill)} · ${esc(c.name)}</h4><p>${esc(detail)}</p>`+(job?`<p class="tooltip-meta">岗位例句｜${esc(job.employer)} · ${esc(job.title)}</p><blockquote>“${esc(jobExcerpt(job,skill))}”</blockquote><p class="tooltip-note">例句摘自该岗位 responsibilities / requirements；按逐条技能编码匹配。提及率不代表录用概率。</p>${tipSource('来源：53条招聘启事编码',sourceLink(job.url,'打开这条招聘原文'))}`:`<p class="tooltip-note">这组样本没有点名该技能的岗位，不提供其他组的例句。</p>${tipSource('来源：53条招聘启事编码')}`);
     showTooltip(target,html,pin);
   }
   function renderSkills(){
@@ -252,6 +340,8 @@
       cells.select('.skill-count').text(c=>`${d[c.key]}/${c.n}条`);
       cells.select('.skill-bar').interrupt().style('width',c=>`${Number(d[c.key])/c.n*100}%`);
     });
+    root.selectAll('.callout').remove();
+    if(skillMode==='employers')row.filter(d=>['新闻采编与判断','数据分析与指标'].includes(d['技能类别'])).append('p').attr('class','callout callout-skill').attr('aria-hidden','true').text(d=>`互联网 20 条中 ${d['互联网大厂(n=20)']} 条点名`);
     prepareGrowth($('.skills-figure'));if($('.skills-figure').dataset.chartEntered)playGrowth($('.skills-figure'));
   }
   function renderJobs(){ const group=$('#job-group').value, query=$('#job-search').value.trim().toLocaleLowerCase(); const jobs=story.jobs.filter(j=>(group==='all'||j.group===group)&&[j.employer,j.title,j.majors_text,j.requirements,j.responsibilities,j.preferred].join(' ').toLocaleLowerCase().includes(query)); $('#job-count').textContent=`共 ${jobs.length} 条岗位`; $('#job-list').innerHTML=jobs.length?jobs.map(j=>`<details class="job-record"><summary><span><small>${esc(j.employer)}</small><strong>${esc(j.title)}</strong></span><span class="expand-icon" aria-hidden="true"></span></summary><div class="job-body"><p class="record-meta">${esc([j.group,j.recruit_type,j.grad_year&&j.grad_year+'届',j.publish_date&&'发布于 '+j.publish_date].filter(Boolean).join(' · '))}</p>${[['专业要求',j.majors_text],['岗位职责',j.responsibilities],['任职要求',j.requirements],['优先条件',j.preferred]].filter(([,v])=>v).map(([k,v])=>`<h4>${k}</h4><p>${esc(v).replace(/\n/g,'<br>')}</p>`).join('')}${sourceLink(j.url,'打开招聘原文')}</div></details>`).join(''):'<p class="empty-state">没有符合条件的岗位。试试其他关键词，或选择全部雇主。</p>'; }
