@@ -3,6 +3,17 @@
   const $ = s => document.querySelector(s);
   const $$ = s => [...document.querySelectorAll(s)];
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  const parallaxWindows = $$('.chapter-image');
+  const topButton = $('.return-top');
+  const runningAnimations = new Map();
+  function enterTransition(el, scale=false) {
+    runningAnimations.get(el)?.cancel();
+    if(reducedMotion.matches || !el.animate)return;
+    const animation=el.animate(scale?[{opacity:0,transform:'scale(.96) translateY(6px)'},{opacity:1,transform:'scale(1) translateY(0)'}]:[{opacity:.25,transform:'translateY(8px)'},{opacity:1,transform:'translateY(0)'}],{duration:180,easing:'cubic-bezier(.16,1,.3,1)'});
+    runningAnimations.set(el,animation);
+    animation.onfinish=()=>{if(runningAnimations.get(el)===animation)runningAnimations.delete(el);};
+  }
+  topButton.addEventListener('click',()=>{window.scrollTo({top:0,behavior:reducedMotion.matches?'instant':'smooth'});$('#top').setAttribute('tabindex','-1');$('#top').focus({preventScroll:true});});
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const safeURL = value => { try { const u = new URL(value); return /^https?:$/.test(u.protocol) ? u.href : '#source-records'; } catch { return '#source-records'; } };
   const sourceLink = (url, title = '查看原文') => `<a href="${esc(safeURL(url))}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>`;
@@ -20,6 +31,14 @@
     const max = document.documentElement.scrollHeight - innerHeight;
     $('.reading-progress i').style.transform = `scaleX(${max > 0 ? Math.min(1,scrollY/max) : 0})`;
     document.body.classList.toggle('has-scrolled',scrollY > 100);
+    const visible=scrollY>innerHeight*2;
+    topButton.classList.toggle('is-visible',visible);
+    topButton.setAttribute('aria-hidden',String(!visible));topButton.tabIndex=visible?0:-1;
+    for(const el of parallaxWindows){
+      const r=el.getBoundingClientRect();
+      const y=!reducedMotion.matches && innerWidth>650 && r.bottom>0 && r.top<innerHeight ? Math.max(-18,Math.min(18,(innerHeight/2-r.top-r.height/2)*.045)):0;
+      el.style.setProperty('--parallax-y',y+'px');
+    }
     const current = [...chapters].reverse().find(x => x.getBoundingClientRect().top < innerHeight * .4) || chapters[0];
     $$('#chapter-nav a').forEach(a => {const active = a.hash === '#'+current.id; a.classList.toggle('active',active); if (active) a.setAttribute('aria-current','location'); else a.removeAttribute('aria-current');});
     framePending=false;
@@ -43,8 +62,8 @@
       {label:'周末至深夜',title:'到经院、统计学院，补课',text:'去经院和统计学院蹭计量经济学，在图书馆刷LeetCode SQL窗口函数与A/B测试归因题。',quote:'高数期中只考了38分，最后挂科重修，那阵子焦虑到枕头上全是头发。'}]}
   ];
   let personIndex=0,phaseIndex=0;
-  function renderPhase(){ const phase=people[personIndex].phases[phaseIndex]; pressed('[data-phase]',phaseIndex,'phase'); $('#schedule-content').innerHTML=`<h4>${esc(phase.title)}</h4><p>${esc(phase.text)}</p><blockquote>“${esc(phase.quote)}”</blockquote>`; }
-  function renderPerson(){ const p=people[personIndex]; pressed('[data-person]',personIndex,'person'); $('#person-name').textContent=p.name; $('#person-role').textContent=p.role; $('#person-hours').textContent=p.hours; $('#person-portrait').src=`assets/img/figure-${portraitFiles[personIndex]}.jpg`; $('#person-portrait').alt=p.name+'人物插画（模拟叙事）'; $('#day-tabs').innerHTML=p.phases.map((x,i)=>`<button data-phase="${i}" aria-pressed="${i===phaseIndex}">${esc(x.label)}</button>`).join(''); $$('[data-phase]').forEach(b=>b.addEventListener('click',()=>{phaseIndex=Number(b.dataset.phase);renderPhase();}));renderPhase(); }
+  function renderPhase(){ const phase=people[personIndex].phases[phaseIndex]; pressed('[data-phase]',phaseIndex,'phase'); $('#schedule-content').innerHTML=`<h4>${esc(phase.title)}</h4><p>${esc(phase.text)}</p><blockquote>“${esc(phase.quote)}”</blockquote>`; enterTransition($('#schedule-content')); }
+  function renderPerson(){ const p=people[personIndex]; pressed('[data-person]',personIndex,'person'); $('#person-name').textContent=p.name; $('#person-role').textContent=p.role; $('#person-hours').textContent=p.hours; $('#person-portrait').src=`assets/img/figure-${portraitFiles[personIndex]}.jpg`; $('#person-portrait').alt=p.name+'人物插画（模拟叙事）'; $('#day-tabs').innerHTML=p.phases.map((x,i)=>`<button data-phase="${i}" aria-pressed="${i===phaseIndex}">${esc(x.label)}</button>`).join(''); $$('[data-phase]').forEach(b=>b.addEventListener('click',()=>{phaseIndex=Number(b.dataset.phase);renderPhase();}));renderPhase(); enterTransition($('.person-heading')); enterTransition($('.schedule-total')); }
   $$('[data-person]').forEach(b=>b.addEventListener('click',()=>{personIndex=Number(b.dataset.person);phaseIndex=0;renderPerson();}));renderPerson();
   let story, jobSkillIndex;
   const tooltip=document.createElement('aside');
@@ -52,7 +71,18 @@
   tooltip.setAttribute('role','region'); tooltip.setAttribute('aria-label','图表详情与来源');
   document.body.append(tooltip);
   let tooltipTarget=null, tooltipPinned=false, closeTimer;
-  function hideTooltip(){clearTimeout(closeTimer); tooltip.hidden=true; tooltipTarget?.setAttribute('aria-expanded','false'); tooltipTarget=null; tooltipPinned=false;}
+  function clearChartGroup(){ $$('.chart-group-active').forEach(el=>el.classList.remove('chart-group-active')); $$('.is-chart-muted,.is-chart-linked,.is-chart-selected').forEach(el=>el.classList.remove('is-chart-muted','is-chart-linked','is-chart-selected')); }
+  function linkChartGroup(target){
+    clearChartGroup();
+    const chart=target.closest('#skills-chart,.time-chart,.admissions-figure,.routes,.credit-quilt');
+    if(!chart)return;
+    chart.classList.add('chart-group-active');
+    const cells=[...chart.querySelectorAll('.skill-cell,.time-row,.admission-row,.routes>div,.credit-quilt button')];
+    cells.forEach(el=>{const linked=target.dataset.chartGroup?el.dataset.chartGroup===target.dataset.chartGroup:el===target;el.classList.add(linked?'is-chart-linked':'is-chart-muted');});
+    target.classList.add('is-chart-selected');
+    if(target.dataset.chartGroup)chart.querySelectorAll('.skill-heading>div').forEach(el=>el.classList.toggle('is-chart-linked',el.dataset.chartGroup===target.dataset.chartGroup));
+  }
+  function hideTooltip(){clearChartGroup();clearTimeout(closeTimer); tooltip.hidden=true; tooltipTarget?.setAttribute('aria-expanded','false'); tooltipTarget=null; tooltipPinned=false;}
   function positionTooltip(){
     if(!tooltipTarget || tooltip.hidden)return;
     const r=tooltipTarget.getBoundingClientRect(), width=tooltip.offsetWidth;
@@ -64,10 +94,11 @@
   function showTooltip(target,html,pin=false){
     clearTimeout(closeTimer);
     if(tooltipPinned && !pin && target!==tooltipTarget)return;
+    const entering=tooltip.hidden||tooltipTarget!==target;
     tooltipTarget?.setAttribute('aria-expanded','false');
     tooltipTarget=target; tooltipPinned=pin; target.setAttribute('aria-expanded','true');
     tooltip.innerHTML='<button type="button" class="tooltip-close" aria-label="关闭图表详情">关闭</button>'+html;
-    tooltip.hidden=false; positionTooltip();
+    tooltip.hidden=false; positionTooltip(); linkChartGroup(target); if(entering)enterTransition(tooltip,true);
     tooltip.querySelector('button').addEventListener('click',()=>{const origin=tooltipTarget;hideTooltip();origin?.focus();});
   }
   function deferHide(){if(!tooltipPinned){clearTimeout(closeTimer);closeTimer=setTimeout(hideTooltip,240);}}
@@ -103,6 +134,43 @@
     window.observeSkillEntrance=()=>observer.observe($('.skills-figure'));
   }
 
+
+  const revealTargets=$$('.chapter-cover h2,.chapter-question,.chapter-divider,.prose>p,.prose>.voice,.person-introduction,.figure>figcaption,.figure>.chart-conclusion,.choice,.core-findings,.ending>p,.ending-title');
+  const mediaTargets=$$('.image-window');
+  const counters=$$('.lead-evidence b');
+  const counterFrames=new Map();
+  function countUp(el){
+    if(el.dataset.counted)return;el.dataset.counted='true';
+    const final=Number(el.textContent);el.dataset.countFinal=String(final);
+    if(reducedMotion.matches)return;
+    el.setAttribute('aria-label',String(final));
+    const started=performance.now();
+    const tick=now=>{if(reducedMotion.matches){el.textContent=String(final);counterFrames.delete(el);return;}const t=Math.min(1,(now-started)/1050);el.textContent=String(Math.round(final*(1-Math.pow(1-t,3))));if(t<1)counterFrames.set(el,requestAnimationFrame(tick));else counterFrames.delete(el);};
+    counterFrames.set(el,requestAnimationFrame(tick));
+  }
+  let revealObserver,mediaObserver,countObserver;
+  if('IntersectionObserver' in window&&!reducedMotion.matches){
+    revealObserver=new IntersectionObserver(entries=>{
+      let order=0;
+      entries.filter(e=>e.isIntersecting).sort((a,b)=>a.target.getBoundingClientRect().top-b.target.getBoundingClientRect().top).forEach(e=>{e.target.style.setProperty('--reveal-delay',Math.min(order++,4)*70+'ms');e.target.classList.add('is-revealed');revealObserver.unobserve(e.target);});
+    },{threshold:0,rootMargin:'0px 0px -32px 0px'});
+    revealTargets.forEach(el=>{el.classList.add('reveal-pending');revealObserver.observe(el);});
+    mediaObserver=new IntersectionObserver(entries=>entries.forEach(e=>{if(e.isIntersecting){e.target.classList.add('is-revealed');mediaObserver.unobserve(e.target);}}),{threshold:.08});
+    mediaTargets.forEach(el=>{el.classList.add('image-pending');const img=el.querySelector('img');const settle=e=>{if(e.propertyName==='transform'){el.classList.add('image-settled');img.removeEventListener('transitionend',settle);requestReading();}};img.addEventListener('transitionend',settle);mediaObserver.observe(el);});
+    countObserver=new IntersectionObserver(entries=>entries.forEach(e=>{if(e.isIntersecting){countUp(e.target);countObserver.unobserve(e.target);}}),{threshold:.5});
+    counters.forEach(el=>countObserver.observe(el));
+  }
+  reducedMotion.addEventListener('change',()=>{
+    if(reducedMotion.matches){
+      revealObserver?.disconnect();mediaObserver?.disconnect();countObserver?.disconnect();
+      revealTargets.forEach(el=>el.classList.add('is-revealed'));
+      mediaTargets.forEach(el=>el.classList.add('is-revealed','image-settled'));
+      for(const [el,id] of counterFrames){cancelAnimationFrame(id);el.textContent=el.dataset.countFinal;}counterFrames.clear();
+      for(const a of runningAnimations.values())a.cancel();runningAnimations.clear();
+    }
+    requestReading();
+  });
+
   const employerColumns=[{name:'中央媒体',n:15,key:'中央媒体(n=15)',color:'var(--blue)'},{name:'市场化媒体',n:18,key:'市场化媒体(n=18)',color:'var(--gold)'},{name:'互联网大厂',n:20,key:'互联网大厂(n=20)',color:'var(--salmon)'}];
   const internetColumns=[{name:'内容岗位',n:10,key:'互联网·内容岗(n=10)',color:'var(--blue)'},{name:'数据分析岗位',n:10,key:'互联网·数据分析岗(n=10)',color:'var(--salmon)'}];
   const keySkills=['新闻采编与判断','视频与视听制作','外语','财经与商业知识','数据分析与指标','AI工具与大模型'];
@@ -137,12 +205,12 @@
     const columns=skillMode==='employers'?employerColumns:internetColumns;
     const rows=$('#all-skills').checked?story.skills:story.skills.filter(d=>keySkills.includes(d['技能类别']));
     hideTooltip(); const root=d3.select('#skills-chart'); root.selectAll('p').remove();
-    root.selectAll('.skill-heading').data([columns]).join('div').attr('class','skill-heading').style('--columns',columns.length).html('<span>技能</span>'+columns.map(c=>`<div><b>${c.name}</b><small>${c.n}条岗位</small></div>`).join(''));
+    root.selectAll('.skill-heading').data([columns]).join('div').attr('class','skill-heading').style('--columns',columns.length).html('<span>技能</span>'+columns.map(c=>`<div data-chart-group="${esc(c.key)}"><b>${c.name}</b><small>${c.n}条岗位</small></div>`).join(''));
     const row=root.selectAll('.skill-row').data(rows,d=>d['技能类别']).join(enter=>{const r=enter.append('div').attr('class','skill-row');r.append('strong');return r;}).style('--columns',columns.length);
     row.classed('is-key',d=>['数据分析与指标','AI工具与大模型'].includes(d['技能类别']));
     row.select('strong').text(d=>d['技能类别']);
     row.each(function(d){const cells=d3.select(this).selectAll('.skill-cell').data(columns,c=>c.key).join(enter=>{const b=enter.append('button').attr('class','skill-cell').attr('type','button');b.append('span').attr('class','skill-value');b.append('span').attr('class','skill-count');b.append('span').attr('class','skill-track').append('i').attr('class','skill-bar').style('width','0%');return b;}).style('--skill-color',c=>c.color).attr('aria-label',c=>`${d['技能类别']}，${c.name}：${d[c.key]}/${c.n}条，${Math.round(Number(d[c.key])/c.n*100)}%`).classed('is-key',c=>['数据分析与指标','AI工具与大模型'].includes(d['技能类别'])&&c.key.startsWith('互联网'))
-        .attr('aria-controls','chart-tooltip').attr('aria-expanded','false')
+        .attr('data-chart-group',c=>c.key).attr('aria-controls','chart-tooltip').attr('aria-expanded','false')
         .on('click',function(_,c){if(tooltipTarget===this&&tooltipPinned)hideTooltip();else skillDetails(d,c,this,true);})
         .on('pointerenter',function(e,c){if(e.pointerType!=='touch')skillDetails(d,c,this);}).on('pointerleave',deferHide)
         .on('focus',function(_,c){skillDetails(d,c,this);}).on('blur',deferHide);
