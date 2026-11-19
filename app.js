@@ -6,6 +6,7 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const safeURL = value => { try { const u = new URL(value); return /^https?:$/.test(u.protocol) ? u.href : '#source-records'; } catch { return '#source-records'; } };
   const sourceLink = (url, title = '查看原文') => `<a href="${esc(safeURL(url))}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>`;
+  const portraitFiles=['shenruoning','yeshuhuan','chensiqi'];
   const pressed = (selector, active, key) => $$(selector).forEach(b => b.setAttribute('aria-pressed', String(b.dataset[key] === String(active))));
   const menu = $('.menu-toggle'), nav = $('#chapter-nav');
   function closeMenu() { nav.classList.remove('is-open'); menu.setAttribute('aria-expanded','false'); menu.setAttribute('aria-label','打开章节目录'); }
@@ -43,25 +44,111 @@
   ];
   let personIndex=0,phaseIndex=0;
   function renderPhase(){ const phase=people[personIndex].phases[phaseIndex]; pressed('[data-phase]',phaseIndex,'phase'); $('#schedule-content').innerHTML=`<h4>${esc(phase.title)}</h4><p>${esc(phase.text)}</p><blockquote>“${esc(phase.quote)}”</blockquote>`; }
-  function renderPerson(){ const p=people[personIndex]; pressed('[data-person]',personIndex,'person'); $('#person-name').textContent=p.name; $('#person-role').textContent=p.role; $('#person-hours').textContent=p.hours; $('#day-tabs').innerHTML=p.phases.map((x,i)=>`<button data-phase="${i}" aria-pressed="${i===phaseIndex}">${esc(x.label)}</button>`).join(''); $$('[data-phase]').forEach(b=>b.addEventListener('click',()=>{phaseIndex=Number(b.dataset.phase);renderPhase();}));renderPhase(); }
+  function renderPerson(){ const p=people[personIndex]; pressed('[data-person]',personIndex,'person'); $('#person-name').textContent=p.name; $('#person-role').textContent=p.role; $('#person-hours').textContent=p.hours; $('#person-portrait').src=`assets/img/figure-${portraitFiles[personIndex]}.jpg`; $('#person-portrait').alt=p.name+'人物插画（模拟叙事）'; $('#day-tabs').innerHTML=p.phases.map((x,i)=>`<button data-phase="${i}" aria-pressed="${i===phaseIndex}">${esc(x.label)}</button>`).join(''); $$('[data-phase]').forEach(b=>b.addEventListener('click',()=>{phaseIndex=Number(b.dataset.phase);renderPhase();}));renderPhase(); }
   $$('[data-person]').forEach(b=>b.addEventListener('click',()=>{personIndex=Number(b.dataset.person);phaseIndex=0;renderPerson();}));renderPerson();
-  let story;
+  let story, jobSkillIndex;
+  const tooltip=document.createElement('aside');
+  tooltip.id='chart-tooltip'; tooltip.className='chart-tooltip'; tooltip.hidden=true;
+  tooltip.setAttribute('role','region'); tooltip.setAttribute('aria-label','图表详情与来源');
+  document.body.append(tooltip);
+  let tooltipTarget=null, tooltipPinned=false, closeTimer;
+  function hideTooltip(){clearTimeout(closeTimer); tooltip.hidden=true; tooltipTarget?.setAttribute('aria-expanded','false'); tooltipTarget=null; tooltipPinned=false;}
+  function positionTooltip(){
+    if(!tooltipTarget || tooltip.hidden)return;
+    const r=tooltipTarget.getBoundingClientRect(), width=tooltip.offsetWidth;
+    const left=Math.max(16,Math.min(innerWidth-width-16,r.left+r.width/2-width/2));
+    let top=scrollY+r.bottom+12;
+    if(r.bottom+tooltip.offsetHeight+12>innerHeight && r.top>tooltip.offsetHeight+16)top=scrollY+r.top-tooltip.offsetHeight-12;
+    tooltip.style.left=left+'px'; tooltip.style.top=top+'px';
+  }
+  function showTooltip(target,html,pin=false){
+    clearTimeout(closeTimer);
+    if(tooltipPinned && !pin && target!==tooltipTarget)return;
+    tooltipTarget?.setAttribute('aria-expanded','false');
+    tooltipTarget=target; tooltipPinned=pin; target.setAttribute('aria-expanded','true');
+    tooltip.innerHTML='<button type="button" class="tooltip-close" aria-label="关闭图表详情">关闭</button>'+html;
+    tooltip.hidden=false; positionTooltip();
+    tooltip.querySelector('button').addEventListener('click',()=>{const origin=tooltipTarget;hideTooltip();origin?.focus();});
+  }
+  function deferHide(){if(!tooltipPinned){clearTimeout(closeTimer);closeTimer=setTimeout(hideTooltip,240);}}
+  tooltip.addEventListener('pointerenter',()=>clearTimeout(closeTimer)); tooltip.addEventListener('pointerleave',deferHide);
+  tooltip.addEventListener('focusin',()=>clearTimeout(closeTimer));
+  tooltip.addEventListener('focusout',e=>{if(!tooltip.contains(e.relatedTarget)&&!tooltipPinned)deferHide();});
+  document.addEventListener('click',e=>{if(tooltipTarget&&!tooltip.contains(e.target)&&!tooltipTarget.contains(e.target))hideTooltip();});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!tooltip.hidden){const origin=tooltipTarget;hideTooltip();origin?.focus();}});
+  addEventListener('resize',positionTooltip);
+  addEventListener('scroll',()=>{if(tooltipTarget){const r=tooltipTarget.getBoundingClientRect();if(r.bottom<70||r.top>innerHeight)hideTooltip();}},{passive:true});
+  function bindChartHit(el, content){
+    el.classList.add('chart-hit'); el.tabIndex=0; el.setAttribute('role','button');el.setAttribute('aria-controls','chart-tooltip');el.setAttribute('aria-expanded','false');
+    const open=pin=>showTooltip(el,content(),pin);
+    el.addEventListener('pointerenter',e=>{if(e.pointerType!=='touch')open(false);});
+    el.addEventListener('pointerleave',deferHide);el.addEventListener('focus',()=>open(false));el.addEventListener('blur',deferHide);
+    el.addEventListener('click',()=>{if(tooltipTarget===el&&tooltipPinned)hideTooltip();else open(true);});
+    el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click();}});
+  }
+  $$('.admission-row').forEach((el,i)=>bindChartHit(el,()=>{const a=story?.admissions[i];if(!a)return '<p>数据正在加载。</p>';const source=story.sources.find(x=>x.id===a.source);return `<h4>${esc(el.querySelector('.admission-label').textContent)}</h4><p>${esc(a.count)}人 / 计划${i===2?'约':''}${esc(a.plan)}人；${i===2?'拟录取':'录取'}公示。</p><p class="tooltip-note">公示人数不等同于报名人数，不能由此推算录取率。</p>${sourceLink(source.url,'查看公示原文')}`;}));
+  $$('.time-row').forEach((el,i)=>bindChartHit(el,()=>{const d=story?.time[i];return d?`<h4>${esc(d.path)}</h4><p>每周平均额外投入 ${d.mean} 小时；本组 ${d.n} 人。</p><p class="tooltip-note">来源：${esc(story.time_provenance)}。模拟编码用于叙事呈现，不作总体推断。</p>`:'<p>数据正在加载。</p>';}));
+  $$('.routes>div').forEach(el=>bindChartHit(el,()=>`<h4>${esc(el.querySelector('h4').textContent)}</h4><p>${esc(el.textContent)}</p><p class="tooltip-note">各入口的学分、凭证与最高学历要求不同，请分别核对项目简章。</p><a href="#source-records">查看高校文件台账</a>`));
+  $$('.credit-quilt button').forEach(el=>{
+    const content=()=>{const rows=story?.courses.filter(c=>c.program_id==='cuc-news-2025'&&categoryNames[el.dataset.courseCategory].includes(c.name))||[];const source=story?.sources.find(x=>x.id==='cuc-minor25');return `<h4>${esc(el.textContent)}</h4><p>${rows.map(c=>`${esc(c.name)}：${c.credits}学分，${c.hours}学时`).join('<br>')}</p><p class="tooltip-note">按课程名称归类；不推断实际授课技能。</p>${source?sourceLink(source.url,'查看课程原表'):''}`;};
+    el.setAttribute('aria-controls','chart-tooltip');el.setAttribute('aria-expanded','false');
+    el.addEventListener('pointerenter',e=>{if(e.pointerType!=='touch')showTooltip(el,content());});el.addEventListener('pointerleave',deferHide);
+    el.addEventListener('focus',()=>showTooltip(el,content()));el.addEventListener('blur',deferHide);el.addEventListener('click',()=>showTooltip(el,content(),true));
+  });
+  const growthTargets=$$('.admissions-figure,.skills-figure,.curriculum-figure,.time-figure');
+  if('IntersectionObserver' in window&&!reducedMotion.matches){
+    const observer=new IntersectionObserver(entries=>entries.forEach(e=>{if(e.isIntersecting){e.target.dataset.chartEntered='true';e.target.classList.add('growth-play');setTimeout(()=>e.target.classList.remove('growth-play'),900);observer.unobserve(e.target);}}),{threshold:.12});
+    // Skills are observed after their data has rendered.
+    growthTargets.filter(el=>!el.classList.contains('skills-figure')).forEach(el=>observer.observe(el));
+    window.observeSkillEntrance=()=>observer.observe($('.skills-figure'));
+  }
+
   const employerColumns=[{name:'中央媒体',n:15,key:'中央媒体(n=15)',color:'var(--blue)'},{name:'市场化媒体',n:18,key:'市场化媒体(n=18)',color:'var(--gold)'},{name:'互联网大厂',n:20,key:'互联网大厂(n=20)',color:'var(--salmon)'}];
   const internetColumns=[{name:'内容岗位',n:10,key:'互联网·内容岗(n=10)',color:'var(--blue)'},{name:'数据分析岗位',n:10,key:'互联网·数据分析岗(n=10)',color:'var(--salmon)'}];
   const keySkills=['新闻采编与判断','视频与视听制作','外语','财经与商业知识','数据分析与指标','AI工具与大模型'];
   let skillMode='employers';
-  function skillDetails(d,c){ $('#skill-detail').textContent=`${c.name}的${c.n}条招聘启事中，${d[c.key]}条提到“${d['技能类别']}”，占比${(Number(d[c.key])/c.n*100).toFixed(1).replace('.0','')}%。`; }
+  const skillTerms={
+    '新闻采编与判断':/采访|采编|新闻敏感|新闻判断|信息感知/,
+    '视频与视听制作':/视频|剪辑|视听|全媒体/,
+    '外语':/英文|英语|外语|中英文/,
+    '财经与商业知识':/财经|金融|经济|商业|行业/,
+    '数据分析与指标':/数据|指标|分析|归因|统计/,
+    'AI工具与大模型':/AI|AIGC|大模型|人工智能/i,
+    '编程与数据工具':/SQL|Python|编程|数据库/i
+  };
+  function jobExcerpt(job,skill){
+    const sentences=[job.responsibilities,job.requirements].filter(Boolean).flatMap(v=>v.split(/\n|(?<=[。；;])/)).map(v=>v.trim()).filter(Boolean);
+    return sentences.find(v=>(skillTerms[skill]||/./).test(v))||sentences[0]||'';
+  }
+  function skillDetails(d,c,target,pin=false){
+    const skill=d['技能类别'], count=Number(d[c.key]);
+    const detail=`${c.name}的${c.n}条招聘启事中，${count}条提到“${skill}”，占比${(count/c.n*100).toFixed(1).replace('.0','')}%。`;
+    $('#skill-detail').textContent=detail;
+    const jobs=story.jobs.filter(j=>{
+      const group=c.key.startsWith('互联网')?'互联网大厂':c.name;
+      const category=c.key.includes('内容岗')?'内容':c.key.includes('数据分析岗')?'数据分析':null;
+      return j.group===group&&(!category||j.job_category===category)&&(jobSkillIndex[j.id]||[]).includes(skill);
+    });
+    const job=jobs.find(j=>jobExcerpt(j,skill));
+    const html=`<h4>${esc(skill)} · ${esc(c.name)}</h4><p>${esc(detail)}</p>`+(job?`<p class="tooltip-meta">岗位例句｜${esc(job.employer)} · ${esc(job.title)}</p><blockquote>“${esc(jobExcerpt(job,skill))}”</blockquote>${sourceLink(job.url,'打开这条招聘原文')}<p class="tooltip-note">例句摘自该岗位 responsibilities / requirements；按逐条技能编码匹配。提及率不代表录用概率。</p>`:`<p class="tooltip-note">这组样本没有点名该技能的岗位，不提供其他组的例句。</p>`);
+    showTooltip(target,html,pin);
+  }
   function renderSkills(){
     const columns=skillMode==='employers'?employerColumns:internetColumns;
     const rows=$('#all-skills').checked?story.skills:story.skills.filter(d=>keySkills.includes(d['技能类别']));
-    const root=d3.select('#skills-chart'); root.selectAll('p').remove();
+    hideTooltip(); const root=d3.select('#skills-chart'); root.selectAll('p').remove();
     root.selectAll('.skill-heading').data([columns]).join('div').attr('class','skill-heading').style('--columns',columns.length).html('<span>技能</span>'+columns.map(c=>`<div><b>${c.name}</b><small>${c.n}条岗位</small></div>`).join(''));
     const row=root.selectAll('.skill-row').data(rows,d=>d['技能类别']).join(enter=>{const r=enter.append('div').attr('class','skill-row');r.append('strong');return r;}).style('--columns',columns.length);
+    row.classed('is-key',d=>['数据分析与指标','AI工具与大模型'].includes(d['技能类别']));
     row.select('strong').text(d=>d['技能类别']);
-    row.each(function(d){const cells=d3.select(this).selectAll('.skill-cell').data(columns,c=>c.key).join(enter=>{const b=enter.append('button').attr('class','skill-cell').attr('type','button');b.append('span').attr('class','skill-value');b.append('span').attr('class','skill-track').append('i').attr('class','skill-bar').style('width','0%');return b;}).style('--skill-color',c=>c.color).attr('aria-label',c=>`${d['技能类别']}，${c.name}：${d[c.key]}/${c.n}条，${Math.round(Number(d[c.key])/c.n*100)}%`).on('click',(_,c)=>skillDetails(d,c)).on('focus',(_,c)=>skillDetails(d,c));
+    row.each(function(d){const cells=d3.select(this).selectAll('.skill-cell').data(columns,c=>c.key).join(enter=>{const b=enter.append('button').attr('class','skill-cell').attr('type','button');b.append('span').attr('class','skill-value');b.append('span').attr('class','skill-count');b.append('span').attr('class','skill-track').append('i').attr('class','skill-bar').style('width','0%');return b;}).style('--skill-color',c=>c.color).attr('aria-label',c=>`${d['技能类别']}，${c.name}：${d[c.key]}/${c.n}条，${Math.round(Number(d[c.key])/c.n*100)}%`).classed('is-key',c=>['数据分析与指标','AI工具与大模型'].includes(d['技能类别'])&&c.key.startsWith('互联网'))
+        .attr('aria-controls','chart-tooltip').attr('aria-expanded','false')
+        .on('click',function(_,c){if(tooltipTarget===this&&tooltipPinned)hideTooltip();else skillDetails(d,c,this,true);})
+        .on('pointerenter',function(e,c){if(e.pointerType!=='touch')skillDetails(d,c,this);}).on('pointerleave',deferHide)
+        .on('focus',function(_,c){skillDetails(d,c,this);}).on('blur',deferHide);
       cells.select('.skill-value').text(c=>`${Math.round(Number(d[c.key])/c.n*100)}%`);
-      const bars=cells.select('.skill-bar').interrupt();
-      if(reducedMotion.matches) bars.style('width',c=>`${Number(d[c.key])/c.n*100}%`); else bars.transition().duration(650).ease(d3.easeCubicOut).style('width',c=>`${Number(d[c.key])/c.n*100}%`);
+      cells.select('.skill-count').text(c=>`${d[c.key]}/${c.n}条`);
+      cells.select('.skill-bar').interrupt().style('width',c=>`${Number(d[c.key])/c.n*100}%`);
     });
   }
   function renderJobs(){ const group=$('#job-group').value, query=$('#job-search').value.trim().toLocaleLowerCase(); const jobs=story.jobs.filter(j=>(group==='all'||j.group===group)&&[j.employer,j.title,j.majors_text,j.requirements,j.responsibilities,j.preferred].join(' ').toLocaleLowerCase().includes(query)); $('#job-count').textContent=`共 ${jobs.length} 条岗位`; $('#job-list').innerHTML=jobs.length?jobs.map(j=>`<details class="job-record"><summary><span><small>${esc(j.employer)}</small><strong>${esc(j.title)}</strong></span><span class="expand-icon" aria-hidden="true"></span></summary><div class="job-body"><p class="record-meta">${esc([j.group,j.recruit_type,j.grad_year&&j.grad_year+'届',j.publish_date&&'发布于 '+j.publish_date].filter(Boolean).join(' · '))}</p>${[['专业要求',j.majors_text],['岗位职责',j.responsibilities],['任职要求',j.requirements],['优先条件',j.preferred]].filter(([,v])=>v).map(([k,v])=>`<h4>${k}</h4><p>${esc(v).replace(/\n/g,'<br>')}</p>`).join('')}${sourceLink(j.url,'打开招聘原文')}</div></details>`).join(''):'<p class="empty-state">没有符合条件的岗位。试试其他关键词，或选择全部雇主。</p>'; }
@@ -74,8 +161,8 @@
   function renderSources(){const query=$('#source-search').value.trim().toLocaleLowerCase();const rows=story.sources.filter(s=>[s.school,s.title,s.summary].join(' ').toLocaleLowerCase().includes(query));$('#source-list').innerHTML=rows.length?rows.map(s=>`<article class="source-record"><p class="record-meta">${esc(s.school)} · ${esc(s.date)}</p><h4>${sourceLink(s.url,s.title)}</h4><p>${esc(s.summary)}</p></article>`).join(''):'<p class="empty-state">没有找到这份资料。试试学校全称或“招生简章”。</p>';}
   async function loadStory(){
     try {
-      const response=await fetch('story-data.json');if(!response.ok)throw new Error(`HTTP ${response.status}`);story=await response.json();if(!window.d3)throw new Error('Chart library unavailable');
-      renderSkills();renderJobs();renderCourses();renderCategory('数字');renderCost(0);renderSources();
+      const response=await fetch('story-data.json');if(!response.ok)throw new Error(`HTTP ${response.status}`);story=await response.json();const indexResponse=await fetch('assets/job-skill-index.json');if(!indexResponse.ok)throw new Error('Job skill index unavailable');jobSkillIndex=await indexResponse.json();if(!window.d3)throw new Error('Chart library unavailable');
+      renderSkills();renderJobs();renderCourses();renderCategory('数字');renderCost(0);renderSources();window.observeSkillEntrance?.();
       $$('[data-skill-mode]').forEach(b=>b.addEventListener('click',()=>{skillMode=b.dataset.skillMode;pressed('[data-skill-mode]',skillMode,'skillMode');renderSkills();$('#skill-detail').textContent=skillMode==='internet'?'内容与数据分析岗位各10条；点击技能格查看条数。':'三类雇主共53条岗位；点击技能格查看条数。';}));
       $('#all-skills').addEventListener('change',renderSkills);$('#job-group').addEventListener('change',renderJobs);$('#job-search').addEventListener('input',renderJobs);$('#course-program').addEventListener('change',renderCourses);$('#source-search').addEventListener('input',renderSources);
       $$('[data-course-category]').forEach(b=>b.addEventListener('click',()=>renderCategory(b.dataset.courseCategory)));$$('[data-cost]').forEach(b=>b.addEventListener('click',()=>renderCost(Number(b.dataset.cost))));
