@@ -367,3 +367,6 @@
   }
   loadStory();
 })();
+
+/* video-intro（AutoClaw） */
+(function(){var v=document.getElementById('intro-video'),b=document.getElementById('video-play');if(!v||!b)return;b.addEventListener('click',function(){b.closest('.video-frame').classList.add('is-playing');v.controls=true;v.play();});v.addEventListener('ended',function(){v.controls=false;v.currentTime=0;b.closest('.video-frame').classList.remove('is-playing');});})();
